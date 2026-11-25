@@ -1,0 +1,150 @@
+[
+  {
+    "code": "jd_orders",
+    "preview": "jd_orders",
+    "data_source": "jd",
+    "platform": "jd",
+    "order_id": "JD-001",
+    "paid": "19.25",
+    "raw": {
+      "订单号": "JD-001",
+      "下单时间": "2026-11-23",
+      "订单状态": "完成",
+      "商品ID": "P1",
+      "商品名称": "测试商品",
+      "订购数量": "1",
+      "京东价": "20",
+      "商家应收": "19.25（系统计算中，该值仅供参考）",
+      "商家SKUID": "SKU-01",
+      "应付金额": "20"
+    }
+  },
+  {
+    "code": "pdd_orders",
+    "preview": "pdd_orders",
+    "data_source": "pdd",
+    "platform": "pdd",
+    "order_id": "PDD-001",
+    "paid": "30.00",
+    "sku": "PDD-FALLBACK",
+    "discount": "1.55",
+    "raw": {
+      "订单号": "PDD-001",
+      "订单成交时间": "2026-11-23",
+      "订单状态": "已付款",
+      "商品": "测试商品",
+      "商品数量(件)": "1",
+      "商品总价(元)": "30.05",
+      "用户实付金额(元)": "28.50",
+      "商家实收金额(元)": "30",
+      "商家编码-规格维度": "",
+      "商家编码-商品维度": "PDD-FALLBACK",
+      "店铺优惠折扣(元)": "0.50",
+      "平台优惠折扣(元)": "1.00",
+      "多多支付立减金额(元)": "0.05"
+    }
+  },
+  {
+    "code": "taobao_tmall_orders",
+    "preview": "taobao_tmall_orders",
+    "data_source": "taobao",
+    "platform": "taobao",
+    "order_id": "TB-001",
+    "paid": "18.00",
+    "line_key": "TB-L01",
+    "raw": {
+      "主订单编号": "TB-001",
+      "子订单编号": "TB-L01",
+      "订单创建时间": "2026-11-23",
+      "订单付款时间": "2026-11-24",
+      "商品标题": "测试商品",
+      "购买数量": "1",
+      "买家应付货款": "19",
+      "买家实付金额": "18",
+      "订单状态": "TRADE_FINISHED"
+    }
+  },
+  {
+    "code": "tmall_orders",
+    "preview": "taobao_tmall_orders",
+    "data_source": "tmall",
+    "platform": "tmall",
+    "order_id": "TM-001",
+    "paid": "51.80",
+    "line_key": "TM-L01",
+    "raw": {
+      "主订单编号": "TM-001",
+      "子订单编号": "TM-L01",
+      "订单创建时间": "2026-11-23",
+      "商品标题": "测试商品",
+      "购买数量": "1",
+      "买家应付货款": "55",
+      "买家实付金额": "51.80",
+      "订单状态": "已完成"
+    }
+  },
+  {
+    "code": "douyin_orders",
+    "preview": "douyin_orders",
+    "data_source": "douyin",
+    "platform": "douyin",
+    "order_id": "DY-001",
+    "paid": "32.00",
+    "raw": {
+      "主订单编号": "DY-001",
+      "订单提交时间": "2026-11-23",
+      "支付完成时间": "2026-11-24",
+      "选购商品": "测试商品",
+      "商品数量": "1",
+      "订单应付金额": "32",
+      "订单状态": "已完成",
+      "达人ID": "CREATOR-01",
+      "达人昵称": "测试达人",
+      "买家昵称": "pii-buyer"
+    }
+  },
+  {
+    "code": "jushuitan_erp_a",
+    "preview": "jushuitan_erp_a",
+    "data_source": "jushuitan",
+    "platform": "taobao",
+    "order_id": "ERP-A-001",
+    "paid": "20.00",
+    "sku": "A-FALLBACK",
+    "raw": {
+      "店铺名称": "测试聚水潭 A",
+      "系统单号": "INTERNAL-A",
+      "外部订单号": "",
+      "交易订单号": "ERP-A-001",
+      "货品编码": "A-FALLBACK",
+      "商品小计": "20",
+      "赠品标识": "否",
+      "下单时间": "2026-11-23",
+      "商品名称": "测试商品",
+      "订货数量": "1",
+      "状态": "已完成"
+    }
+  },
+  {
+    "code": "jushuitan_erp_b",
+    "preview": "jushuitan_erp_b",
+    "data_source": "jushuitan",
+    "platform": "pdd",
+    "order_id": "ERP-B-001",
+    "paid": "0.00",
+    "line_key": "ERP-B-L01",
+    "raw": {
+      "店铺名称": "测试聚水潭 B",
+      "内部订单号": "INTERNAL-B",
+      "线上订单号": "ERP-B-001",
+      "标准商品名": "测试商品",
+      "线上子订单编号": "ERP-B-L01",
+      "买家实付金额": "0",
+      "是否赠品": "是",
+      "下单时间": "2026-11-23",
+      "数量": "1",
+      "子订单状态": "",
+      "状态": "已完成"
+    }
+  }
+]
