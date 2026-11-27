@@ -416,7 +416,7 @@ def test_calibrated_real_platform_rules_clean_bybt_pdd_and_jushuitan_edge_cases(
     assert pdd_result["summary"]["error_rows"] == 0, pdd_result["errors_preview"]
     assert pdd_result["unknown_statuses"] == []
     pdd_lines = pdd_result["cleaned_sample_rows"]
-    assert pdd_lines[0]["order_time"] == "2026-11-14 00:00:00"
+    assert pdd_lines[0]["order_time"] == "2026-11-14T00:00:00"
     assert pdd_lines[0]["is_valid_for_gmv"] is False
     assert pdd_lines[1]["paid_amount"] == "1500.00"
     assert pdd_lines[1]["refund_amount"] == "1500.00"

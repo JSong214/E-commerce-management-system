@@ -9,8 +9,23 @@ from pydantic import (
     StringConstraints,
 )
 
-DataSource = Literal["taobao", "tmall", "douyin", "jd", "pdd", "jushuitan", "custom"]
-Platform = Literal["taobao", "tmall", "douyin", "jd", "pdd", "other"]
+DataSource = Literal[
+    "taobao", "tmall", "douyin", "jd", "pdd", "jushuitan", "manual", "custom"
+]
+Platform = Literal["taobao", "tmall", "douyin", "jd", "pdd", "huanxin", "other"]
+OperatorType = Literal["self_operated", "agency_operated"]
+SalesMode = Literal["dealer", "distribution", "hybrid"]
+ShopStatus = Literal["active", "dormant", "inactive"]
+UnitType = Literal["indoor", "outdoor"]
+ChannelType = Literal[
+    "jst_i_id", "jst_sku_id", "pdd_sku_id", "tb_sku_id", "tm_sku_id",
+    "dy_sku_id", "jd_sku_id", "merchant_code", "custom_title",
+]
+MatchSource = Literal["excel_import", "manual", "learned_from_review"]
+SourceRole = Literal["direct_sales", "erp_enrich", "erp_independent_sales"]
+ModelMatchStatus = Literal["matched", "ambiguous", "unmatched", "manual_confirmed"]
+EligibilityStatus = Literal["valid", "excluded", "needs_review"]
+EffectiveTimeBasis = Literal["business_time", "order_time", "pay_time"]
 NormalizedStatus = Literal[
     "pending_pay", "paid_unshipped", "shipped", "completed", "closed_cancelled"
 ]
@@ -23,6 +38,8 @@ MappableField = Literal[
     "shop_name",
     "platform_order_id",
     "sub_order_id",
+    "external_order_id",
+    "internal_order_id",
     "order_time",
     "pay_time",
     "ship_time",
@@ -31,6 +48,8 @@ MappableField = Literal[
     "sku_code",
     "product_name",
     "sku_spec",
+    "raw_model_hint",
+    "order_type",
     "is_gift",
     "quantity",
     "unit_price",
@@ -38,6 +57,8 @@ MappableField = Literal[
     "discount_amount",
     "shipping_fee",
     "paid_amount",
+    "payable_amount",
+    "erp_paid_amount",
     "refund_amount",
     "raw_order_status",
     "refund_status",

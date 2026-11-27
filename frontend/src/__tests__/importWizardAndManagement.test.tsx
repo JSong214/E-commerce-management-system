@@ -4,6 +4,7 @@ import { MemoryRouter } from 'react-router-dom';
 import { ConfigProvider } from 'antd';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { phase1Api } from '../api/client';
+import { v2Api } from '../api/v2Client';
 import { ImportWizardPage } from '../pages/ImportWizardPage';
 import { ManagementPage } from '../pages/ManagementPage';
 
@@ -174,7 +175,7 @@ describe('Ticket 07 — Import Wizard & Management Console', () => {
       });
       expect(screen.getByText(/导入批次 IMP-20261124-0000000000000002 已入库完成/)).toBeInTheDocument();
     });
-  }, 20000);
+  });
 
   it('displays rollback-blocked guidance for older overlapping batches in ManagementPage', async () => {
     vi.spyOn(phase1Api, 'listBatches').mockResolvedValue({
@@ -225,6 +226,7 @@ describe('Ticket 07 — Import Wizard & Management Console', () => {
     vi.spyOn(phase1Api, 'listTemplates').mockResolvedValue({ items: [] });
     vi.spyOn(phase1Api, 'listShops').mockResolvedValue({ items: [] });
     vi.spyOn(phase1Api, 'listStatusMappings').mockResolvedValue({ items: [] });
+    vi.spyOn(v2Api, 'listSalesRules').mockResolvedValue({ items: [] });
 
     renderWithProviders(<ManagementPage />, '/management');
 
@@ -235,7 +237,7 @@ describe('Ticket 07 — Import Wizard & Management Console', () => {
 
     expect(screen.getByRole('button', { name: /精确回滚/ })).toBeEnabled();
     expect(screen.getByRole('button', { name: /需先回滚新批/ })).toBeDisabled();
-  }, 15000);
+  });
 
   it('guards commit on unknown statuses in Step 3 and allows inline batch-upsert + revalidate', async () => {
     vi.spyOn(phase1Api, 'listTemplates').mockResolvedValue({
@@ -366,5 +368,5 @@ describe('Ticket 07 — Import Wizard & Management Console', () => {
       expect(validateSpy).toHaveBeenCalledTimes(2);
       expect(screen.getByRole('button', { name: /下一步：确认入库策略/ })).toBeEnabled();
     });
-  }, 20000);
+  });
 });

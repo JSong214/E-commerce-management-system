@@ -6,7 +6,8 @@ from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from hashlib import sha1
 from typing import get_args
 
-from .domain import MappableField
+from .domain import MappableField, TemplateRules
+from .errors import ApiError
 from .import_parser import PII_KEYS, header_key
 from .time_values import local_datetime
 
@@ -14,24 +15,33 @@ CENT = Decimal("0.01")
 ZERO = Decimal("0.00")
 MAX_MONEY = Decimal("999999999999.99")
 MONEY_DEFAULTS = {"discount_amount": ZERO, "shipping_fee": ZERO, "refund_amount": ZERO}
-MONEY_FIELDS = {"unit_price", "gross_amount", "paid_amount", *MONEY_DEFAULTS}
+MONEY_FIELDS = {
+    "unit_price", "gross_amount", "paid_amount", "payable_amount",
+    "erp_paid_amount", *MONEY_DEFAULTS,
+}
 DATE_FIELDS = {"order_time", "pay_time", "ship_time", "finish_time"}
 REQUIRED = {
     "platform_order_id",
     "order_time",
-    "product_name",
     "quantity",
     "raw_order_status",
 }
-ID_FIELDS = {"platform_order_id", "sub_order_id", "product_id", "sku_code"}
+ID_FIELDS = {
+    "platform_order_id", "sub_order_id", "external_order_id", "internal_order_id",
+    "product_id", "sku_code",
+}
 STRING_LIMITS = {
     "shop_name": 128,
     "platform_order_id": 64,
     "sub_order_id": 64,
+    "external_order_id": 64,
+    "internal_order_id": 64,
     "product_id": 64,
     "sku_code": 128,
     "product_name": 512,
     "sku_spec": 255,
+    "raw_model_hint": 255,
+    "order_type": 64,
     "raw_order_status": 128,
     "refund_status": 64,
     "province": 64,
@@ -55,6 +65,7 @@ FULL_REFUND_ORDER_STATUSES = {
     "已收货，退款成功",
 }
 NON_REFUND_STATUSES = {"退款关闭", "未申请退款"}
+ERP_ENRICHMENT_KEY = "_erp_enrichment"
 
 
 @dataclass
@@ -93,6 +104,20 @@ def bounded_money(amount):
     if not result.is_finite() or abs(result) > MAX_MONEY:
         raise ValueError("Amount out of range")
     return result or ZERO
+
+
+def money_or_none(value):
+    if value is None or value == "":
+        return None
+    try:
+        return bounded_money(Decimal(strip_numeric(str(value))))
+    except (ValueError, InvalidOperation):
+        return None
+
+
+def supply_price(info):
+    match = BYBT_PRICE_RE.search(info or "")
+    return money_or_none(match[1]) if match else None
 
 
 def date_value(value):
@@ -142,7 +167,7 @@ def clean_value(name, value):
     return value
 
 
-def clean_row(source, mapping, rules, pii_keys):
+def clean_row(source, mapping, rules, pii_keys, settings, sales_rules):
     raw = {
         key: value
         for key, value in source["values"].items()
@@ -158,6 +183,24 @@ def clean_row(source, mapping, rules, pii_keys):
             if raw.get(key) and raw[key].strip().casefold() not in NULL_PLACEHOLDERS
         ]
         label, value = populated[0] if populated else ((choices or [name])[0], "")
+        if name == "platform_order_id" and settings["template_code"] == "tmall_erp_a":
+            rule = sales_rules["tmall_order_id_priority"]
+            if rule["enabled"]:
+                config = rule["config_json"]
+                lp = raw.get("发货LP号", "").removeprefix("'").strip()
+                if lp.startswith(config["prefer_lp_prefix"]):
+                    label, value = "发货LP号", lp
+                else:
+                    fallback = next(
+                        (
+                            (column, raw[column])
+                            for column in [*config["fallback_order"], "系统单号"]
+                            if raw.get(column, "").strip().casefold() not in {"", *NULL_PLACEHOLDERS}
+                        ),
+                        None,
+                    )
+                    if fallback:
+                        label, value = fallback
         if name in ID_FIELDS:
             value = value.removeprefix("'").strip()
 
@@ -212,7 +255,10 @@ def clean_row(source, mapping, rules, pii_keys):
                 raise ValueError("Proration requires a nonnegative amount")
         except (ValueError, OverflowError, InvalidOperation):
             line[name] = None
-            row.error(name, value, "INVALID_VALUE", f"「{label}」的值无效或超出范围")
+            if settings["data_source"] == "taobao" and name == "paid_amount":
+                row.warn(name, "买家实付金额无效，将检查百亿补贴供货价")
+            else:
+                row.error(name, value, "INVALID_VALUE", f"「{label}」的值无效或超出范围")
 
     if rules.extract_bybt_supply_price and line.get("quantity"):
         bybt_info = (
@@ -255,16 +301,31 @@ def clean_row(source, mapping, rules, pii_keys):
             )
 
     used = {key for choices in mapping.values() for key in choices}
+    if not line["raw_model_hint"] and 0 < len(raw.get("型号", "")) <= STRING_LIMITS["raw_model_hint"]:
+        line["raw_model_hint"] = raw["型号"]
+    keep_raw = {"应付金额", "款号", "店铺款式编码", "型号", "品牌"}
+    if settings["data_source"] in {"jushuitan", "manual"}:
+        keep_raw.update(("商品编码", "原始商品编码", "标准商品名"))
+    if settings["data_source"] == "taobao":
+        config = sales_rules["taobao_subsidy_fallback"]["config_json"]
+        keep_raw.update(("买家实付金额", config["primary_column"], config["subsidy_column"]))
     line.update(
-        raw_extra={key: value for key, value in raw.items() if key not in used},
+        raw_extra={
+            key: value for key, value in raw.items()
+            if key != ERP_ENRICHMENT_KEY and (key not in used or key in keep_raw)
+        },
         is_amount_prorated=False,
+        amount_source=None,
+        erp_enriched=False,
+        erp_enriched_fields=None,
+        erp_raw_status=None,
     )
     return row
 
 
 def apply_shop(row, shops, default_shop):
     name = row.line["shop_name"]
-    shop = shops.get(name.casefold()) if name else default_shop
+    shop = shops.get(header_key(name)) if name else default_shop
     if shop is None:
         row.line.update(shop_id=None, platform=None)
         if not name and not any(
@@ -273,11 +334,11 @@ def apply_shop(row, shops, default_shop):
             row.error(
                 "shop_name", "", "REQUIRED_MISSING", "请选择默认店铺或映射店铺名称"
             )
-        return name
+        return None, name
     row.line.update(
         shop_id=shop["id"], shop_name=shop["shop_name"], platform=shop["platform"]
     )
-    return None
+    return shop, None
 
 
 def apply_status(row, statuses, unknown_statuses):
@@ -316,14 +377,14 @@ def assign_line_keys(rows):
         line = row.line
         sub_id = line["sub_order_id"]
         ignore_erp_pdd_sub = (
-            line["platform"] == "pdd"
+            line["data_source"] in {"jushuitan", "manual"}
             and bool(sub_id)
             and bool(ERP_PDD_SYNTHETIC_SUB_RE.fullmatch(sub_id))
         )
         if sub_id and not ignore_erp_pdd_sub:
             line["line_key"] = sub_id
             continue
-        if not line["platform_order_id"] or not line["product_name"]:
+        if not line["platform_order_id"]:
             continue
         base = (
             (line["product_id"] or line["sku_code"])
@@ -332,7 +393,7 @@ def assign_line_keys(rows):
         )
         if not base:
             base = sha1(
-                line["product_name"].encode("utf-8"), usedforsecurity=False
+                (line["product_name"] or "").encode("utf-8"), usedforsecurity=False
             ).hexdigest()[:8]
         scope = (
             line["platform"],
@@ -423,21 +484,46 @@ def prorate_orders(rows):
     return prorated
 
 
-def clean_sheet(sheet, mapping, rules, data_source, shops, default_shop, statuses):
+def clean_sheet(sheet, settings, shops, default_shop, statuses, sales_rules):
+    rules = TemplateRules.model_validate(settings["rules"])
+    data_source = settings["data_source"]
+    mapping = settings["column_mapping"]
     mapping = {**GEO_HEADERS, **mapping}
     mapping = {
         name: [choice] if isinstance(choice, str) else choice
         for name, choice in mapping.items()
     }
     pii = PII_KEYS | {header_key(name) for name in rules.pii_columns}
-    rows = [clean_row(row, mapping, rules, pii) for row in sheet["rows"]]
+    rows = [clean_row(row, mapping, rules, pii, settings, sales_rules) for row in sheet["rows"]]
     unknown_shops, unknown_statuses = set(), set()
+    inactive_shops = set()
     for row in rows:
-        row.line["data_source"] = data_source
-        unknown_shop = apply_shop(row, shops, default_shop)
+        line = row.line
+        shop, unknown_shop = apply_shop(row, shops, default_shop)
         if unknown_shop:
             unknown_shops.add(unknown_shop)
+            fixed = sales_rules["tmall_order_id_priority"]
+            if settings["template_code"] == "tmall_erp_a" and fixed["enabled"]:
+                name = fixed["config_json"]["fixed_shop_name"]
+                row.warn("shop_name", f"可将该分销商店铺名称绑定为「{name}」的别名")
+        if shop and shop["shop_status"] == "inactive":
+            inactive_shops.add(shop["shop_name"])
+        line["data_source"] = data_source
+        line["source_role"] = settings["source_role"]
+        if shop and line["source_role"] == "erp_independent_sales" and not shop["erp_sales_enabled"]:
+            line["source_role"] = "erp_enrich"
+        if not line["product_name"] and not (shop and shop["preserve_full_product_name"]):
+            label = (mapping.get("product_name") or ["product_name"])[0]
+            if not any(error["field_name"] == "product_name" for error in row.errors):
+                row.error("product_name", "", "REQUIRED_MISSING", f"必填字段「{label}」为空")
+        line["product_name"] = line["product_name"] or ""
+        keywords = sales_rules["exclude_reship_and_price_diff"]["config_json"]["reship_order_types"]
+        line["is_reship"] = "补发" in (line["order_type"] or "") or any(
+            keyword in (line["order_type"] or "") for keyword in keywords if keyword
+        )
         apply_status(row, statuses, unknown_statuses)
+    if inactive_shops:
+        raise ApiError(422, "SHOP_INACTIVE", "订单涉及未启用的店铺", {"inactive_shops": sorted(inactive_shops)})
     assign_line_keys(rows)
     prorated_orders = prorate_orders(rows) if rules.prorate_order_amount else 0
     for row in rows:
@@ -449,12 +535,15 @@ def clean_sheet(sheet, mapping, rules, data_source, shops, default_shop, statuse
             and not any(error["field_name"] == "paid_amount" for error in row.errors)
         ):
             line["paid_amount"] = ZERO
+            line["amount_source"] = "missing_amount"
         if line["paid_amount"] is None and not any(
             error["field_name"] == "paid_amount" for error in row.errors
         ):
-            label = (mapping.get("paid_amount") or ["paid_amount"])[0]
-            row.error("paid_amount", "", "REQUIRED_MISSING", f"必填字段「{label}」为空")
-            continue
+            if data_source == "jd" and line["payable_amount"] is not None:
+                line["paid_amount"] = line["payable_amount"]
+            else:
+                line["paid_amount"] = ZERO
+                line["amount_source"] = "missing_amount"
 
         paid = line.get("paid_amount") or ZERO
         refund = line.get("refund_amount") or ZERO

@@ -13,6 +13,7 @@ from .import_validation import (
     prepare_validation,
     validation_settings,
 )
+from .ingestion_sources import recommend_role
 from .spreadsheets import error_workbook
 from .staging import Staging
 
@@ -60,6 +61,7 @@ def parse_preview(
     name, sheet = selected_sheet(upload, sheet_name)
     upload["selected_sheet"] = name
     token = staging.save("stg", upload)
+    matched = sheet["matched_template"]
     return {
         "staged_file_id": token,
         "file_name": file_name,
@@ -69,7 +71,8 @@ def parse_preview(
         "total_rows": len(sheet["rows"]),
         "headers": sheet["headers"],
         "sample_rows": [row["values"] for row in sheet["rows"][:PREVIEW_ROWS]],
-        "matched_template": sheet["matched_template"],
+        "matched_template": matched,
+        "recommended_source_role": recommend_role(matched["data_source"] if matched else None, file_name),
         "pii_columns_detected": sheet["pii_columns_detected"],
     }
 
@@ -79,7 +82,7 @@ def validate_import(body: ValidationRequest, db: Db, staging: Staging):
     upload = staging.load("stg", body.staged_file_id)
     name, sheet = selected_sheet(upload, body.sheet_name)
     with db.engine.connect() as conn:
-        settings = validation_settings(conn, db, body, sheet)
+        settings = validation_settings(conn, db, body, sheet, upload["file_name"])
         result = prepare_validation(conn, db, sheet, settings)
     token = staging.save(
         "val",
@@ -94,9 +97,13 @@ def validate_import(body: ValidationRequest, db: Db, staging: Staging):
     )
     return {
         "validation_id": token,
+        "source_role": settings["source_role"],
         "summary": result["summary"],
+        "v2_summary": result["v2_summary"],
         "unknown_shops": result["unknown_shops"],
+        "inactive_shops": result["inactive_shops"],
         "unknown_statuses": result["unknown_statuses"],
+        "ambiguous_model_preview": result["ambiguous_model_preview"],
         "errors_preview": [
             {key: value for key, value in error.items() if key != "raw_row_sanitized"}
             for error in result["errors"][:PREVIEW_ROWS]

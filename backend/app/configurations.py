@@ -97,59 +97,6 @@ def delete_template(id: RecordId, db: Db):
         require_custom(get_record(conn, table, id, lock=True))
         conn.execute(table.delete().where(table.c.id == id))
     return Response(status_code=204)
-
-
-class ShopBinding(BaseModel):
-    shop_name: Name
-    platform: Platform
-
-
-class ShopInput(ShopBinding):
-    default_data_source: DataSource | None = None
-    is_active: BooleanFlag = True
-
-
-class ShopBindings(BaseModel):
-    items: list[ShopBinding] = Field(min_length=1)
-
-
-def insert_shop(conn, table, values):
-    result = conn.execute(table.insert().values(**values))
-    return record_json(get_record(conn, table, result.lastrowid), flags=("is_active",))
-
-
-@router.get("/shops")
-def list_shops(db: Db):
-    return list_records(db, "shops", "is_active")
-
-
-@router.post("/shops", status_code=201)
-def create_shop(body: ShopInput, db: Db):
-    table = db.tables["shops"]
-    with configuration_write(db, "DUPLICATE_SHOP", "店铺名称已存在") as conn:
-        return insert_shop(conn, table, body.model_dump())
-
-
-@router.post("/shops/batch-bind", status_code=201)
-def batch_bind_shops(body: ShopBindings, db: Db):
-    table = db.tables["shops"]
-    with configuration_write(db, "DUPLICATE_SHOP", "店铺名称已存在") as conn:
-        return {
-            "items": [
-                insert_shop(conn, table, shop.model_dump()) for shop in body.items
-            ]
-        }
-
-
-@router.put("/shops/{id}")
-def update_shop(id: RecordId, body: ShopInput, db: Db):
-    table = db.tables["shops"]
-    with configuration_write(db, "DUPLICATE_SHOP", "店铺名称已存在") as conn:
-        get_record(conn, table, id, lock=True)
-        conn.execute(table.update().where(table.c.id == id).values(**body.model_dump()))
-        return record_json(get_record(conn, table, id), flags=("is_active",))
-
-
 class StatusMappingInput(BaseModel):
     data_source: DataSource | Literal["*"]
     raw_status: Name

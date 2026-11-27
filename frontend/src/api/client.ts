@@ -57,7 +57,7 @@ async function parseError(response: Response): Promise<ApiClientError> {
   );
 }
 
-async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
+export async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, {
     ...init,
     headers: {
@@ -102,7 +102,7 @@ export function triggerBrowserDownload(blob: Blob, filename: string): void {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-async function downloadFile(
+export async function downloadFile(
   path: string,
   fallbackFilename: string,
   init?: RequestInit,
@@ -167,6 +167,7 @@ export const phase1Api = {
     staged_file_id: string;
     sheet_name?: string;
     data_source: DataSource;
+    source_role?: 'direct_sales' | 'erp_enrich' | 'erp_independent_sales';
     template_id?: number | null;
     column_mapping: ColumnMapping;
     rules?: MappingTemplateRules;
@@ -178,6 +179,7 @@ export const phase1Api = {
       column_mapping: payload.column_mapping,
     };
     if (payload.sheet_name) body.sheet_name = payload.sheet_name;
+    if (payload.source_role) body.source_role = payload.source_role;
     if (payload.template_id !== undefined && payload.template_id !== null) {
       body.template_id = payload.template_id;
     }

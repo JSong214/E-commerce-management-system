@@ -42,8 +42,18 @@ class Database:
                 "import_batch_errors",
                 "order_lines",
                 "import_batch_snapshots",
+                "shop_aliases",
+                "product_categories",
+                "product_models",
+                "product_unit_components",
+                "product_channel_mappings",
+                "sales_rules",
+                "effective_sales_records",
             ],
         )
+        lines = metadata.tables["order_lines"]
+        for field in ("erp_enriched_fields", "model_match_candidates"):
+            lines.c[field].type.none_as_null = True
         return metadata.tables
 
     def close(self):

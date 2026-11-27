@@ -3,14 +3,34 @@ from typing import Annotated, Literal
 from fastapi import APIRouter, Query
 from sqlalchemy import bindparam, func, select
 
-from .batch_writes import batch_transaction
+from .batch_writes import batch_order_state, batch_transaction, recompute_orders
 from .db import Db, get_record, record_json
-from .domain import BatchStatus, DataSource, RecordId
+from .domain import BatchStatus, DataSource, RecordId, SourceRole
 from .errors import ApiError
 from .order_lines import chunks, restore_types
+from .ingestion_sources import shop_lookup
+from .sales_rules import load_rules
 from .spreadsheets import error_workbook
 
 router = APIRouter(prefix="/batches", tags=["Batches"])
+PHASE_ONE_SNAPSHOT_DEFAULTS = {
+    "source_role": "direct_sales",
+    "external_order_id": None,
+    "internal_order_id": None,
+    "order_type": None,
+    "is_reship": False,
+    "payable_amount": None,
+    "erp_paid_amount": None,
+    "amount_source": None,
+    "erp_enriched": False,
+    "erp_enriched_fields": None,
+    "erp_raw_status": None,
+    "raw_model_hint": None,
+    "resolved_model_id": None,
+    "model_match_status": "unmatched",
+    "model_match_method": None,
+    "model_match_candidates": None,
+}
 
 
 def find_blockers(conn, db, batch_ids):
@@ -55,12 +75,15 @@ def list_batches(
     page: Annotated[int, Query(ge=1, le=2**31 - 1)] = 1,
     page_size: Annotated[int, Query(ge=1, le=200)] = 20,
     data_source: DataSource | Literal[""] | None = None,
+    source_role: SourceRole | None = None,
     status: BatchStatus | Literal[""] | None = None,
 ):
     batches = db.tables["import_batches"]
     filters = []
     if data_source:
         filters.append(batches.c.data_source == data_source)
+    if source_role:
+        filters.append(batches.c.source_role == source_role)
     if status:
         filters.append(batches.c.status == status)
     with db.engine.connect() as conn:
@@ -140,6 +163,7 @@ def rollback_batch(batch_id: RecordId, db: Db):
                 "较新的批次已更新部分订单行，请先回滚这些批次", blockers
             )
 
+        order_keys, prior_keys = batch_order_state(conn, db, batch_id)
         inserted_ids = select(snapshots.c.order_line_id).where(
             snapshots.c.batch_id == batch_id, snapshots.c.action_type == "insert"
         )
@@ -152,18 +176,31 @@ def rollback_batch(batch_id: RecordId, db: Db):
             )
         ).all()
 
+        models = db.tables["product_models"]
+        referenced_models = {state.get("resolved_model_id") for state in states} - {None}
+        deleted_models = referenced_models - {
+            id
+            for part in chunks(sorted(referenced_models))
+            for id in conn.scalars(select(models.c.id).where(models.c.id.in_(part)))
+        }
         restored = 0
         restore = lines.update().where(lines.c.id == bindparam("snapshot_line_id"))
         for state_chunk in chunks(states):
             updates = []
             for state in state_chunk:
-                values = restore_types(lines, state)
+                values = {**PHASE_ONE_SNAPSHOT_DEFAULTS, **state}
+                if values["resolved_model_id"] in deleted_models:
+                    for field in ("resolved_model_id", "model_match_status", "model_match_method", "model_match_candidates"):
+                        values[field] = PHASE_ONE_SNAPSHOT_DEFAULTS[field]
+                values = restore_types(lines, values)
                 values["snapshot_line_id"] = values.pop("id")
                 updates.append(values)
             restored += conn.execute(restore, updates).rowcount
         if restored != len(states):
             raise rollback_conflict("待恢复的订单行不存在")
 
+        rules = load_rules(conn, db.tables["sales_rules"])
+        recompute_orders(conn, db, order_keys, prior_keys, rules, shop_lookup(conn, db.tables))
         conn.execute(
             batches.update()
             .where(batches.c.id == batch_id)

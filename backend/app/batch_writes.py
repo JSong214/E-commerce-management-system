@@ -1,18 +1,26 @@
 import logging
 import re
+from collections import defaultdict
 from contextlib import contextmanager
 from hashlib import sha256
 
 from pydantic import BaseModel
-from sqlalchemy import func, literal, select
+from sqlalchemy import bindparam, func, literal, select
 from sqlalchemy.dialects.mysql import insert
 from sqlalchemy.exc import SQLAlchemyError
 
 from .db import get_record, record_json
 from .domain import BooleanFlag, DuplicateStrategy
+from .effective_sales_builder import ENRICH, INDEPENDENT, EffectiveSalesBuilder, sales_counts
 from .errors import ApiError
 from .import_validation import prepare_validation
+from .ingestion_sources import (
+    affected_business_keys, merge_source_line, order_groups, order_key,
+    rebuild_effective_sales, refresh_groups, shop_lookup,
+)
 from .order_lines import chunks, identity_matches, identity_table, restore_types
+from .product_matching import ProductMatcher
+from .sales_rules import load_rules
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +74,11 @@ def commit_response(batch):
         "updated_rows",
         "skipped_rows",
         "error_rows",
+        "source_role",
+        "effective_rows",
+        "excluded_rows",
+        "pending_model_rows",
+        "enriched_rows",
     )
     return {"batch_id": batch["id"], **{field: batch[field] for field in fields}}
 
@@ -73,24 +86,92 @@ def commit_response(batch):
 def require_current_shops(conn, db, lines):
     shop_ids = {line["shop_id"] for line in lines}
     if not shop_ids:
-        return
+        return {}
     table = db.tables["shops"]
     shops = conn.execute(
         select(table).where(table.c.id.in_(shop_ids)).with_for_update(read=True)
-    ).mappings()
-    active = {
-        row["id"]: (row["shop_name"], row["platform"])
-        for row in shops
-        if row["is_active"]
-    }
+    ).mappings().all()
+    active = {}
+    inactive = []
+    for row in shops:
+        if row["shop_status"] == "inactive":
+            inactive.append(row["shop_name"])
+        else:
+            active[row["id"]] = (row["shop_name"], row["platform"])
+    if inactive:
+        raise ApiError(422, "SHOP_INACTIVE", "订单涉及未启用的店铺", {"inactive_shops": sorted(inactive)})
     if any(
         active.get(line["shop_id"]) != (line["shop_name"], line["platform"])
         for line in lines
     ):
         raise ApiError(409, "VALIDATION_STALE", "店铺配置已更改，请重新验证文件")
+    return {row["id"]: row for row in shops}
 
 
-def write_order_lines(conn, db, batch_id, rows, strategy):
+def record_update_snapshots(conn, snapshots, batch_id, prior):
+    for part in chunks(list(prior.items())):
+        conn.execute(
+            snapshots.insert(),
+            [
+                {
+                    "batch_id": batch_id,
+                    "order_line_id": line_id,
+                    "action_type": "update",
+                    "before_state": record_json(state),
+                }
+                for line_id, state in part
+            ],
+        )
+
+
+def batch_order_state(conn, db, batch_id):
+    table = db.tables["order_lines"]
+    snapshots = db.tables["import_batch_snapshots"]
+    snapshot_rows = conn.execute(
+        select(table, snapshots.c.before_state).join(
+            snapshots, snapshots.c.order_line_id == table.c.id
+        ).where(snapshots.c.batch_id == batch_id)
+    ).mappings()
+    keys = set()
+    business_keys = set()
+    for row in snapshot_rows:
+        rows = [row]
+        if row["before_state"]:
+            rows.append(row["before_state"])
+        keys.update(order_key(line) for line in rows)
+        business_keys.update(affected_business_keys(rows))
+    return keys, business_keys
+
+
+def recompute_orders(conn, db, keys, prior_keys, rules, shops, *, batch_id=None):
+    if not keys:
+        return []
+    table = db.tables["order_lines"]
+    groups = order_groups(conn, table, keys)
+    matcher = ProductMatcher(conn, db.tables)
+    before = {
+        line["id"]: dict(line)
+        for group in groups.values() for line in group
+        if batch_id is not None and line["last_batch_id"] != batch_id
+    }
+    prior = {}
+    changes = defaultdict(list)
+    for line, fields in refresh_groups(groups, shops, matcher, rules, rematch_all=batch_id is not None):
+        if batch_id is not None:
+            if line["id"] in before:
+                prior[line["id"]] = before[line["id"]]
+            line["last_batch_id"] = fields["last_batch_id"] = batch_id
+        changes[tuple(sorted(fields))].append({**fields, "target_line_id": line["id"]})
+    if prior:
+        record_update_snapshots(conn, db.tables["import_batch_snapshots"], batch_id, prior)
+    for updates in changes.values():
+        for part in chunks(updates):
+            conn.execute(table.update().where(table.c.id == bindparam("target_line_id")), part)
+    builder = EffectiveSalesBuilder(shops, matcher, rules)
+    return rebuild_effective_sales(conn, db.tables["effective_sales_records"], groups, builder, prior_keys)
+
+
+def write_order_lines(conn, db, batch_id, rows, strategy, rules):
     table = db.tables["order_lines"]
     snapshots = db.tables["import_batch_snapshots"]
     counts = {"inserted_rows": 0, "updated_rows": 0, "skipped_rows": 0}
@@ -114,11 +195,21 @@ def write_order_lines(conn, db, batch_id, rows, strategy):
             index = match["row_index"]
             first_index = match["first_index"]
             existing_id = match["id"]
-            if existing_id is None and index == first_index:
-                counts["inserted_rows"] += 1
-            elif strategy == "skip":
+            existing = (
+                {column.name: match[column.name] for column in table.c}
+                if existing_id is not None else None
+            )
+            incoming = restore_types(table, chunk[index])
+            current = writes.get(first_index, existing)
+            if strategy == "skip" and current and current["source_role"] == incoming["source_role"]:
                 counts["skipped_rows"] += 1
                 continue
+            merged = merge_source_line(current, incoming, rules)
+            if merged is None:
+                counts["skipped_rows"] += 1
+                continue
+            if current is None:
+                counts["inserted_rows"] += 1
             else:
                 counts["updated_rows"] += 1
 
@@ -127,39 +218,23 @@ def write_order_lines(conn, db, batch_id, rows, strategy):
                 and match["last_batch_id"] != batch_id
                 and existing_id not in prior
             ):
-                prior[existing_id] = record_json(
-                    {column.name: match[column.name] for column in table.c}
-                )
-            writes[first_index] = restore_types(table, chunk[index])
+                prior[existing_id] = existing
+            writes[first_index] = {field: merged[field] for field in incoming}
 
         if prior:
-            conn.execute(
-                snapshots.insert(),
-                [
-                    {
-                        "batch_id": batch_id,
-                        "order_line_id": line_id,
-                        "action_type": "update",
-                        "before_state": state,
-                    }
-                    for line_id, state in prior.items()
-                ],
-            )
+            record_update_snapshots(conn, snapshots, batch_id, prior)
         if writes:
             values = [
                 {**line, "first_batch_id": batch_id, "last_batch_id": batch_id}
                 for line in writes.values()
             ]
-            if strategy == "upsert":
-                statement = insert(table).values(values)
-                update_fields = {
-                    field: statement.inserted[field]
-                    for field in values[0]
-                    if field != "first_batch_id"
-                }
-                conn.execute(statement.on_duplicate_key_update(**update_fields))
-            else:
-                conn.execute(table.insert(), values)
+            statement = insert(table).values(values)
+            update_fields = {
+                field: statement.inserted[field]
+                for field in values[0]
+                if field != "first_batch_id"
+            }
+            conn.execute(statement.on_duplicate_key_update(**update_fields))
 
     conn.execute(
         snapshots.insert().from_select(
@@ -193,6 +268,8 @@ def commit_validated_import(db, staging, request):
         else:
             validation = staging.load("val", request.validation_id)
             settings = validation["settings"]
+            if "source_role" not in settings:
+                raise ApiError(409, "VALIDATION_STALE", "导入规则已升级，请重新验证文件")
             if validation["unknown_shops"]:
                 upload = staging.load("stg", validation["staged_file_id"])
                 sheet = upload["sheets"][validation["sheet_name"]]
@@ -216,7 +293,13 @@ def commit_validated_import(db, staging, request):
                     },
                 )
 
-            require_current_shops(conn, db, validation["lines"])
+            current_shops = require_current_shops(conn, db, validation["lines"])
+            shops = {**shop_lookup(conn, db.tables), **current_shops}
+            rules = load_rules(conn, db.tables["sales_rules"])
+            if settings["source_role"] == INDEPENDENT:
+                for line in validation["lines"]:
+                    enabled = shops[line["shop_id"]]["erp_sales_enabled"]
+                    line["source_role"] = INDEPENDENT if enabled else ENRICH
             summary = validation["summary"]
             inserted = conn.execute(
                 batches.insert().values(
@@ -225,6 +308,7 @@ def commit_validated_import(db, staging, request):
                     sheet_name=validation["sheet_name"],
                     file_encoding=validation["file_encoding"],
                     data_source=settings["data_source"],
+                    source_role=settings["source_role"],
                     template_id=settings["template_id"],
                     template_name_snapshot=settings["template_name_snapshot"],
                     default_shop_id=settings["default_shop_id"],
@@ -237,8 +321,13 @@ def commit_validated_import(db, staging, request):
             )
             batch_id = inserted.lastrowid
             counts = write_order_lines(
-                conn, db, batch_id, validation["lines"], request.duplicate_strategy
+                conn, db, batch_id, validation["lines"], request.duplicate_strategy, rules
             )
+            order_keys, prior_keys = batch_order_state(conn, db, batch_id)
+            effective = recompute_orders(
+                conn, db, order_keys, prior_keys, rules, shops, batch_id=batch_id
+            )
+            counts.update(sales_counts(effective))
             errors = db.tables["import_batch_errors"]
             for error_chunk in chunks(validation["errors"]):
                 conn.execute(

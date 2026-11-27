@@ -1,6 +1,9 @@
 ---
-status: accepted
+status: superseded
+superseded_by: 0004-master-data-and-two-layer-sales-model.md
 ---
+
+> **Superseded Notice (2026-11-27)**: For V2 Effective Sales (Module 2), JD multi-row indoor+outdoor orders are merged into whole-unit sales records using `应付金额` rather than prorating `商家应收` across component lines. See [ADR-0004](./0004-master-data-and-two-layer-sales-model.md). Raw lines remain preserved in Layer 1 (`order_lines`).
 
 # Order-Level Amount Proration & Line Key Strategy (JD Multi-Row Orders)
 

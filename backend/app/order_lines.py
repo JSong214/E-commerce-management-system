@@ -5,7 +5,7 @@ from decimal import Decimal
 from sqlalchemy import Integer, String, and_, text
 from sqlalchemy.sql.sqltypes import DateTime, Numeric
 
-ORDER_LINE_FLAGS = ("is_gift", "is_amount_prorated", "is_valid_for_gmv")
+ORDER_LINE_FLAGS = ("is_gift", "is_amount_prorated", "is_valid_for_gmv", "is_reship", "erp_enriched")
 IDENTITY_FIELDS = ("platform", "platform_order_id", "line_key")
 MATCH_CHUNK_SIZE = 500
 

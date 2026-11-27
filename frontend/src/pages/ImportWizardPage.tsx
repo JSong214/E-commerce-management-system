@@ -51,6 +51,11 @@ import {
   type ValidateResponse,
   type ImportCommitResponse,
 } from '../contracts/phase1';
+import {
+  EXCLUSION_REASON_LABELS,
+  SOURCE_ROLE_META,
+  type SourceRole,
+} from '../contracts/v2';
 
 const { Text } = Typography;
 
@@ -114,6 +119,7 @@ export function ImportWizardPage() {
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
   const [preview, setPreview] = useState<ParsePreviewResponse | null>(null);
   const [dataSource, setDataSource] = useState<DataSource>('jd');
+  const [sourceRole, setSourceRole] = useState<SourceRole>('direct_sales');
   const [selectedTemplateId, setSelectedTemplateId] = useState<number | null>(null);
   const [columnMap, setColumnMap] = useState<Partial<Record<MappableField, string>>>({});
   const [rules, setRules] = useState<MappingTemplateRules>({ prorate_order_amount: false });
@@ -145,7 +151,9 @@ export function ImportWizardPage() {
   });
 
   const templates = templatesQuery.data?.items ?? [];
-  const activeShops = (shopsQuery.data?.items ?? []).filter((s) => s.is_active);
+  const activeShops = (shopsQuery.data?.items ?? []).filter((s) =>
+    s.shop_status ? s.shop_status !== 'inactive' : s.is_active,
+  );
 
   const selectedTemplate = useMemo(
     () => templates.find((t) => t.id === selectedTemplateId),
@@ -174,6 +182,7 @@ export function ImportWizardPage() {
       setPreview(data);
       setValidation(null);
       setCommitResult(null);
+      setSourceRole(data.recommended_source_role ?? 'direct_sales');
 
       if (data.matched_template) {
         const matchedFull = templates.find((t) => t.id === data.matched_template?.id);
@@ -202,6 +211,7 @@ export function ImportWizardPage() {
         staged_file_id: preview.staged_file_id,
         sheet_name: preview.selected_sheet,
         data_source: dataSource,
+        source_role: sourceRole,
         template_id: removedBaseField ? null : selectedTemplateId,
         column_mapping: mapping,
         rules,
@@ -298,6 +308,8 @@ export function ImportWizardPage() {
       setCommitResult(data);
       queryClient.invalidateQueries({ queryKey: ['batches'] });
       queryClient.invalidateQueries({ queryKey: ['order-lines'] });
+      queryClient.invalidateQueries({ queryKey: ['effective-sales'] });
+      queryClient.invalidateQueries({ queryKey: ['model-review'] });
       queryClient.invalidateQueries({ queryKey: ['reports'] });
       message.success(`批次 ${data.batch_no} 已成功入库`);
     },
@@ -537,7 +549,9 @@ export function ImportWizardPage() {
                 onChange={(val) => setDefaultShopId(val ?? null)}
                 options={activeShops.map((s) => ({
                   value: s.id,
-                  label: `${s.shop_name} (${PLATFORM_META[s.platform].label})`,
+                  label: `${s.shop_name} (${PLATFORM_META[s.platform]?.label ?? s.platform}${
+                    s.shop_status === 'dormant' ? ' · 休眠' : ''
+                  })`,
                 }))}
               />
             </Col>
@@ -562,6 +576,29 @@ export function ImportWizardPage() {
               </Space>
             </Col>
           </Row>
+
+          <Card size="small" style={{ background: '#f8fafc' }}>
+            <Space direction="vertical" size={6} style={{ width: '100%' }}>
+              <Space wrap>
+                <Text strong>来源角色（Source Role）：</Text>
+                <Radio.Group
+                  aria-label="来源角色"
+                  value={sourceRole}
+                  onChange={(e) => setSourceRole(e.target.value)}
+                  optionType="button"
+                  buttonStyle="solid"
+                  size="small"
+                  options={(Object.keys(SOURCE_ROLE_META) as SourceRole[]).map((r) => ({
+                    value: r,
+                    label: SOURCE_ROLE_META[r].label,
+                  }))}
+                />
+              </Space>
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                {SOURCE_ROLE_META[sourceRole].desc}
+              </Text>
+            </Space>
+          </Card>
 
           <Table
             size="small"
@@ -682,6 +719,85 @@ export function ImportWizardPage() {
               />
             </Col>
           </Row>
+
+          {validation.v2_summary && (
+            <Card
+              size="small"
+              title={
+                <Space>
+                  <span>V2 有效销售与型号匹配预估</span>
+                  {validation.source_role && (
+                    <Tag color={SOURCE_ROLE_META[validation.source_role].color}>
+                      {SOURCE_ROLE_META[validation.source_role].label}
+                    </Tag>
+                  )}
+                </Space>
+              }
+              style={{ background: '#f8fafc' }}
+            >
+              <Row gutter={[12, 12]}>
+                <Col xs={12} md={4}>
+                  <Statistic
+                    title="预计有效销售"
+                    value={validation.v2_summary.estimated_effective_valid}
+                    valueStyle={{ color: '#0369a1' }}
+                  />
+                </Col>
+                <Col xs={12} md={4}>
+                  <Statistic
+                    title="预计排除 / 待核对"
+                    value={`${validation.v2_summary.estimated_excluded} / ${validation.v2_summary.estimated_needs_review}`}
+                  />
+                </Col>
+                <Col xs={12} md={4}>
+                  <Statistic
+                    title="京东整机合并"
+                    value={validation.v2_summary.jd_merged_orders}
+                  />
+                </Col>
+                <Col xs={12} md={4}>
+                  <Statistic
+                    title="ERP 补全条数"
+                    value={validation.v2_summary.estimated_erp_enriched}
+                  />
+                </Col>
+                <Col xs={24} md={8}>
+                  <Space direction="vertical" size={4}>
+                    <Text type="secondary" style={{ fontSize: 12 }}>
+                      型号匹配预估（不阻断入库）
+                    </Text>
+                    <Space wrap>
+                      <Tag color="success">自动命中 {validation.v2_summary.model_matched}</Tag>
+                      <Tag color="warning">一对多冲突 {validation.v2_summary.model_ambiguous}</Tag>
+                      <Tag color="error">未命中 {validation.v2_summary.model_unmatched}</Tag>
+                    </Space>
+                  </Space>
+                </Col>
+              </Row>
+              {Object.keys(validation.v2_summary.exclusion_breakdown ?? {}).length > 0 && (
+                <div style={{ marginTop: 10 }}>
+                  <Text type="secondary" style={{ fontSize: 12, marginRight: 8 }}>
+                    排除原因分布：
+                  </Text>
+                  <Space wrap size={[6, 6]}>
+                    {Object.entries(validation.v2_summary.exclusion_breakdown).map(([k, v]) => (
+                      <Tag key={k}>
+                        {EXCLUSION_REASON_LABELS[k] ?? k}: {v}
+                      </Tag>
+                    ))}
+                  </Space>
+                </div>
+              )}
+            </Card>
+          )}
+
+          {validation.inactive_shops && validation.inactive_shops.length > 0 && (
+            <Alert
+              type="error"
+              showIcon
+              message={`检测到 ${validation.inactive_shops.length} 个「未启用」店铺（${validation.inactive_shops.join('、')}），请先前往基础主数据中心将其状态改为「启用」或「休眠」后再导入`}
+            />
+          )}
 
           {validation.unknown_shops.length > 0 && (
             <Alert
@@ -871,6 +987,48 @@ export function ImportWizardPage() {
                   />
                 ),
               },
+              ...(validation.ambiguous_model_preview &&
+              validation.ambiguous_model_preview.length > 0
+                ? [
+                    {
+                      key: 'ambiguous-models',
+                      label: `待确认型号预览 (${validation.ambiguous_model_preview.length})`,
+                      children: (
+                        <Space direction="vertical" size={10} style={{ width: '100%' }}>
+                          <Alert
+                            type="info"
+                            showIcon
+                            message="这些记录存在一对多渠道 ID 冲突，不会阻断当前批次提交；入库后可前往「待确认型号」页面批量点选并一键沉淀映射规则。"
+                          />
+                          <Table
+                            size="small"
+                            pagination={false}
+                            rowKey={(r) => `${r.row_number}-${r.platform_order_id}-${r.external_id ?? ''}`}
+                            dataSource={validation.ambiguous_model_preview}
+                            columns={[
+                              { title: '行号', dataIndex: 'row_number', width: 70 },
+                              { title: '订单号', dataIndex: 'platform_order_id', width: 170 },
+                              { title: '渠道ID', width: 170, render: (_, r) => `${r.channel_type ?? '-'}: ${r.external_id ?? '-'}` },
+                              { title: '商品名称', dataIndex: 'raw_product_name', ellipsis: true },
+                              {
+                                title: '候选标准型号',
+                                render: (_, r) => (
+                                  <Space wrap size={[4, 4]}>
+                                    {r.candidates.map((c) => (
+                                      <Tag key={c.model_id} color="warning">
+                                        {c.brand} · {c.standard_model}
+                                      </Tag>
+                                    ))}
+                                  </Space>
+                                ),
+                              },
+                            ]}
+                          />
+                        </Space>
+                      ),
+                    },
+                  ]
+                : []),
               {
                 key: 'cleaned',
                 label: `清洗后样例预览 (${validation.cleaned_sample_rows.length})`,
@@ -936,6 +1094,7 @@ export function ImportWizardPage() {
               type="primary"
               disabled={
                 validation.unknown_shops.length > 0 ||
+                (validation.inactive_shops?.length ?? 0) > 0 ||
                 statusGateBlocked ||
                 validation.summary.valid_rows === 0
               }
@@ -1005,13 +1164,30 @@ export function ImportWizardPage() {
         <Result
           status="success"
           title={`导入批次 ${commitResult.batch_no} 已入库完成`}
-          subTitle={`总计 ${commitResult.total_rows} 行：新增 ${commitResult.inserted_rows} 行、更新 ${commitResult.updated_rows} 行、跳过重复 ${commitResult.skipped_rows} 行、错误行 ${commitResult.error_rows} 行。`}
+          subTitle={
+            `Layer 1 原始行：总计 ${commitResult.total_rows}（新增 ${commitResult.inserted_rows}、更新 ${commitResult.updated_rows}、ERP补全 ${commitResult.enriched_rows ?? 0}、跳过 ${commitResult.skipped_rows}、错误 ${commitResult.error_rows}）` +
+            (commitResult.effective_rows !== undefined
+              ? ` ｜ Layer 2 有效销售：有效 ${commitResult.effective_rows} 条、排除 ${commitResult.excluded_rows ?? 0} 条、待确认型号 ${commitResult.pending_model_rows ?? 0} 条`
+              : '')
+          }
           extra={[
-            <Button key="orders" type="primary" onClick={() => navigate('/orders')}>
-              查看标准化明细
+            <Button key="effective" type="primary" onClick={() => navigate('/effective-sales')}>
+              查看有效销售明细
             </Button>,
-            <Button key="reports" onClick={() => navigate('/reports')}>
-              查看汇总报表
+            ...(commitResult.pending_model_rows && commitResult.pending_model_rows > 0
+              ? [
+                  <Button
+                    key="review"
+                    type="primary"
+                    ghost
+                    onClick={() => navigate('/model-review')}
+                  >
+                    处理待确认型号 ({commitResult.pending_model_rows})
+                  </Button>,
+                ]
+              : []),
+            <Button key="orders" onClick={() => navigate('/orders')}>
+              查看原始订单行 (L1)
             </Button>,
             <Button key="batches" onClick={() => navigate('/management')}>
               管理导入批次

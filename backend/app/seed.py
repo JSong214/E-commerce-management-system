@@ -51,6 +51,7 @@ PRESETS = [
             "unit_price": "京东价",
             "gross_amount": "订单金额",
             "paid_amount": "商家应收",
+            "payable_amount": "应付金额",
             "shipping_fee": "运费金额",
             "raw_order_status": "订单状态",
             "seller_note": "商家备注",
@@ -128,6 +129,36 @@ PRESETS = [
         },
     },
     {
+        "code": "tmall_erp_a",
+        "name": "天猫 ERP A",
+        "data_source": "tmall",
+        "default_platform": "tmall",
+        "header_fingerprint": ["系统单号", "发货LP号", "分销商店铺名称", "实收金额"],
+        "column_mapping": {
+            "shop_name": "分销商店铺名称",
+            "platform_order_id": ["交易订单号", "外部订单号", "分销订单号", "系统单号"],
+            "external_order_id": "发货LP号",
+            "internal_order_id": "系统单号",
+            "order_time": "下单时间",
+            "pay_time": "支付时间",
+            "ship_time": "发货时间",
+            "finish_time": "签收时间",
+            "sku_code": ["商品编码", "货品编码"],
+            "product_name": "商品名称",
+            "raw_model_hint": "型号",
+            "quantity": "订货数量",
+            "paid_amount": "实收金额",
+            "is_gift": "赠品标识",
+            "order_type": "订单类型",
+            "raw_order_status": "状态",
+            "refund_status": "退款",
+            "province": "省",
+            "city": "市",
+            "seller_note": "卖家备注",
+        },
+        "rules": {},
+    },
+    {
         "code": "douyin_orders",
         "name": "抖音订单明细",
         "data_source": "douyin",
@@ -180,16 +211,21 @@ PRESETS = [
         "column_mapping": {
             "shop_name": ["店铺名称", "分销商店铺名称"],
             "platform_order_id": ["外部订单号", "交易订单号", "系统单号"],
+            "external_order_id": "外部订单号",
+            "internal_order_id": "系统单号",
             "order_time": "下单时间",
             "pay_time": "支付时间",
             "ship_time": "发货时间",
             "finish_time": "签收时间",
             "sku_code": ["商品编码", "货品编码", "货号"],
             "product_name": "商品名称",
+            "order_type": "订单类型",
+            "raw_model_hint": ["标准商品名", "型号", "款号"],
             "quantity": "订货数量",
             "unit_price": "商品售价",
             "gross_amount": "商品总售价",
             "paid_amount": ["实收金额", "商品小计"],
+            "erp_paid_amount": "已付金额",
             "discount_amount": "商品优惠",
             "shipping_fee": "快递费用",
             "is_gift": "赠品标识",
@@ -218,6 +254,8 @@ PRESETS = [
             "shop_name": "店铺名称",
             "platform_order_id": ["线上订单号", "原始线上订单号", "内部订单号"],
             "sub_order_id": ["线上子订单编号", "子订单编号"],
+            "external_order_id": "原始线上订单号",
+            "internal_order_id": "内部订单号",
             "order_time": "下单时间",
             "pay_time": "付款日期",
             "ship_time": "发货日期",
@@ -225,11 +263,15 @@ PRESETS = [
             "product_id": ["店铺款式编码", "款号"],
             "sku_code": ["原始商品编码", "商品编码", "店铺商品编码"],
             "product_name": ["商品名称", "标准商品名"],
+            "raw_model_hint": ["标准商品名", "款号"],
+            "order_type": "订单类型",
             "sku_spec": "颜色及规格",
             "quantity": "数量",
             "unit_price": "商品单价",
             "gross_amount": ["商品金额", "原价"],
             "paid_amount": ["卖家实收金额", "卖家实收", "买家实付金额", "买家实付"],
+            "erp_paid_amount": "已付金额",
+            "payable_amount": "应付金额",
             "discount_amount": "抵扣金额",
             "shipping_fee": "运费",
             "refund_amount": "订单退款金额",
@@ -241,6 +283,62 @@ PRESETS = [
         },
         "rules": {},
     },
+]
+
+SALES_RULES = [
+    (
+        "min_sales_amount", "最低销售额", "eligibility",
+        {"threshold": "400.00", "exclude_reason": "BELOW_MIN_AMOUNT"},
+        "低于门槛的记录不计入有效销售",
+    ),
+    (
+        "taobao_subsidy_fallback", "淘宝百亿补贴与低金额提示", "amount",
+        {
+            "primary_column": "买家实付金额",
+            "subsidy_column": "百亿补贴超链订单信息",
+            "low_amount_notice_threshold": "1000.00",
+        },
+        "买家实付为空或为零时取供货单价乘以数量",
+    ),
+    (
+        "jd_whole_unit_merge", "京东整机合并", "jd_merge",
+        {
+            "amount_field": "payable_amount",
+            "exclude_outdoor_keyword": "外机",
+            "prefer_positive_amount_main_row": True,
+        },
+        "以非外机主行的应付金额和数量生成整机销售记录",
+    ),
+    (
+        "zero_received_use_paid", "零实收取已付金额", "amount",
+        {"brand_aliases": {"苹果手机": "苹果"}},
+        "对开启该开关的店铺使用已付金额并统一品牌别名",
+    ),
+    (
+        "exclude_reship_and_price_diff", "排除补发与补收差价", "eligibility",
+        {"reship_order_types": ["补发", "补发订单"], "price_diff_keywords": ["补收差价"]},
+        "保留原始订单行并排除对应有效销售",
+    ),
+    (
+        "erp_source_priority", "ERP 补全优先级", "source_priority",
+        {
+            "default_erp_mode": "enrich_only",
+            "enrich_fields": ["province", "city", "raw_model_hint", "erp_raw_status"],
+            "never_overwrite_direct_fields": [
+                "paid_amount", "payable_amount", "quantity", "pay_time", "raw_order_status"
+            ],
+        },
+        "ERP 只填补直出订单的空字段",
+    ),
+    (
+        "tmall_order_id_priority", "天猫单号优先级", "source_priority",
+        {
+            "prefer_lp_prefix": "LP",
+            "fallback_order": ["交易订单号", "外部订单号", "分销订单号"],
+            "fixed_shop_name": "天猫优品",
+        },
+        "优先使用发货 LP 号，其次按配置查找业务单号",
+    ),
 ]
 
 SEED_STATUSES = {
@@ -304,6 +402,7 @@ SEED_STATUSES = {
 def seed(database: Database):
     templates = database.tables["mapping_templates"]
     statuses = database.tables["status_mappings"]
+    rules = database.tables["sales_rules"]
     template_stmt = insert(templates)
     with database.engine.begin() as conn:
         conn.execute(
@@ -317,7 +416,9 @@ def seed(database: Database):
             [{**template, "is_builtin": True} for template in PRESETS],
         )
         conn.execute(
-            insert(statuses).on_duplicate_key_update(id=statuses.c.id),
+            insert(statuses).on_duplicate_key_update(
+                normalized_status=statuses.c.normalized_status
+            ),
             [
                 {
                     "data_source": "*",
@@ -328,6 +429,19 @@ def seed(database: Database):
                 }
                 for normalized, values in SEED_STATUSES.items()
                 for raw_status in values
+            ],
+        )
+        conn.execute(
+            insert(rules).on_duplicate_key_update(rule_key=rules.c.rule_key),
+            [
+                {
+                    "rule_key": key,
+                    "rule_name": name,
+                    "rule_group": group,
+                    "config_json": config,
+                    "description": description,
+                }
+                for key, name, group, config, description in SALES_RULES
             ],
         )
 

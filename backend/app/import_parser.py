@@ -69,14 +69,19 @@ def match_template(headers, templates):
         fingerprint = {header_key(header) for header in template["header_fingerprint"]}
         common = len(fingerprint & header_keys)
         if common:
-            score = (common / len(fingerprint), common)
+            if template["code"] == "tmall_erp_a":
+                if common != len(fingerprint):
+                    continue
+                score = (2, common)
+            else:
+                score = (common / len(fingerprint), common)
             if score > highest_score:
                 highest_score = score
                 best = template
     if best is None:
         return None, None
     match = {key: best[key] for key in ("id", "code", "name", "data_source")}
-    match["match_score"] = round(highest_score[0], 4)
+    match["match_score"] = min(1.0, round(highest_score[0], 4))
     return best, match
 
 

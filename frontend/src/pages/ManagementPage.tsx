@@ -29,6 +29,7 @@ import {
 } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ApiClientError, phase1Api } from '../api/client';
+import { v2Api } from '../api/v2Client';
 import {
   DATA_SOURCE_META,
   NORMALIZED_STATUS_META,
@@ -43,6 +44,7 @@ import {
   type Shop,
   type StatusMapping,
 } from '../contracts/phase1';
+import { SOURCE_ROLE_META, type SalesRule, type SourceRole } from '../contracts/v2';
 
 const { Text } = Typography;
 
@@ -69,6 +71,15 @@ export function ManagementPage() {
   const [statusModalOpen, setStatusModalOpen] = useState(false);
   const [editingStatus, setEditingStatus] = useState<StatusMapping | null>(null);
   const [statusForm] = Form.useForm();
+
+  // V2 Sales rule edit modal state
+  const [editingRule, setEditingRule] = useState<SalesRule | null>(null);
+  const [ruleForm] = Form.useForm();
+
+  const salesRulesQuery = useQuery({
+    queryKey: ['sales-rules'],
+    queryFn: () => v2Api.listSalesRules(),
+  });
 
   const batchesQuery = useQuery({
     queryKey: ['batches', batchPage, batchSource, batchStatus],
@@ -102,9 +113,11 @@ export function ManagementPage() {
       setRollbackConflictBanner(null);
       queryClient.invalidateQueries({ queryKey: ['batches'] });
       queryClient.invalidateQueries({ queryKey: ['order-lines'] });
+      queryClient.invalidateQueries({ queryKey: ['effective-sales'] });
+      queryClient.invalidateQueries({ queryKey: ['model-review'] });
       queryClient.invalidateQueries({ queryKey: ['reports'] });
       message.success(
-        `精确回滚完成：删除新增 ${res.deleted_rows} 行，还原更新 ${res.restored_rows} 行`,
+        `精确回滚完成：删除新增 ${res.deleted_rows} 行，还原更新 ${res.restored_rows} 行（已同步重算有效销售）`,
       );
     },
     onError: (err) => {
@@ -233,6 +246,26 @@ export function ManagementPage() {
     },
     onError: (err) => {
       message.error(err instanceof ApiClientError ? err.message : '删除失败');
+    },
+  });
+
+  const updateRuleMutation = useMutation({
+    mutationFn: ({
+      ruleKey,
+      enabled,
+      config_json,
+    }: {
+      ruleKey: string;
+      enabled: boolean;
+      config_json: Record<string, unknown>;
+    }) => v2Api.updateSalesRule(ruleKey, { enabled, config_json }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['sales-rules'] });
+      setEditingRule(null);
+      message.success('销售业务规则已保存（新导入与重算将生效）');
+    },
+    onError: (err) => {
+      message.error(err instanceof ApiClientError ? err.message : '保存规则失败');
     },
   });
 
@@ -374,22 +407,47 @@ export function ManagementPage() {
                     },
                     { title: '文件名', dataIndex: 'file_name', width: 220 },
                     {
-                      title: '数据来源',
+                      title: '数据来源 / 角色',
                       dataIndex: 'data_source',
-                      width: 105,
-                      render: (s: DataSource) => (
-                        <Tag color={DATA_SOURCE_META[s].color}>{DATA_SOURCE_META[s].label}</Tag>
+                      width: 175,
+                      render: (s: DataSource, b) => (
+                        <Space size={4} wrap>
+                          <Tag color={DATA_SOURCE_META[s]?.color}>
+                            {DATA_SOURCE_META[s]?.label ?? s}
+                          </Tag>
+                          {b.source_role && (
+                            <Tag color={SOURCE_ROLE_META[b.source_role as SourceRole]?.color}>
+                              {SOURCE_ROLE_META[b.source_role as SourceRole]?.label}
+                            </Tag>
+                          )}
+                        </Space>
                       ),
                     },
-                    { title: '使用模板', dataIndex: 'template_name_snapshot', width: 180 },
+                    { title: '使用模板', dataIndex: 'template_name_snapshot', width: 170 },
                     {
-                      title: '总 / 增 / 改 / 跳 / 错',
-                      width: 165,
+                      title: 'L1 总/增/改/补全/错',
+                      width: 175,
                       render: (_, b) => (
                         <span className="num-mono">
-                          {b.total_rows} / {b.inserted_rows} / {b.updated_rows} / {b.skipped_rows} /{' '}
+                          {b.total_rows}/{b.inserted_rows}/{b.updated_rows}/{b.enriched_rows ?? 0}/
                           <span style={{ color: b.error_rows > 0 ? '#dc2626' : '#64748b' }}>
                             {b.error_rows}
+                          </span>
+                        </span>
+                      ),
+                    },
+                    {
+                      title: 'L2 有效/排除/待确认',
+                      width: 145,
+                      render: (_, b) => (
+                        <span className="num-mono">
+                          {b.effective_rows ?? 0} / {b.excluded_rows ?? 0} /{' '}
+                          <span
+                            style={{
+                              color: (b.pending_model_rows ?? 0) > 0 ? '#d97706' : '#64748b',
+                            }}
+                          >
+                            {b.pending_model_rows ?? 0}
                           </span>
                         </span>
                       ),
@@ -446,6 +504,93 @@ export function ManagementPage() {
                             </Tooltip>
                           )}
                         </Space>
+                      ),
+                    },
+                  ]}
+                />
+              </Space>
+            ),
+          },
+          {
+            key: 'sales-rules',
+            label: '销售业务规则（可配置开关）',
+            children: (
+              <Space direction="vertical" size={14} style={{ width: '100%' }}>
+                <Alert
+                  type="info"
+                  showIcon
+                  message="这里控制 Layer 2 有效销售明细的业务清洗规则（默认对齐历史自动化脚本口径：400 元门槛、淘宝百亿补贴与 <1000 提示、京东整机合并取应付金额、3C 零实收取已付、补发排除、ERP 仅补空）。"
+                />
+                <Table<SalesRule>
+                  size="small"
+                  rowKey="rule_key"
+                  loading={salesRulesQuery.isLoading}
+                  pagination={false}
+                  dataSource={salesRulesQuery.data?.items ?? []}
+                  columns={[
+                    {
+                      title: '规则名称',
+                      width: 220,
+                      render: (_, r) => (
+                        <Space direction="vertical" size={0}>
+                          <Text strong>{r.rule_name}</Text>
+                          <Text type="secondary" className="num-mono" style={{ fontSize: 11 }}>
+                            {r.rule_key}
+                          </Text>
+                        </Space>
+                      ),
+                    },
+                    {
+                      title: '分组',
+                      dataIndex: 'rule_group',
+                      width: 115,
+                      render: (g: string) => <Tag>{g}</Tag>,
+                    },
+                    { title: '规则说明', dataIndex: 'description' },
+                    {
+                      title: '当前参数',
+                      width: 240,
+                      render: (_, r) => (
+                        <Text code style={{ fontSize: 11 }}>
+                          {JSON.stringify(r.config_json)}
+                        </Text>
+                      ),
+                    },
+                    {
+                      title: '启用状态',
+                      width: 90,
+                      render: (_, r) => (
+                        <Switch
+                          aria-label={`开关-${r.rule_key}`}
+                          checked={r.enabled}
+                          loading={updateRuleMutation.isPending}
+                          onChange={(checked) =>
+                            updateRuleMutation.mutate({
+                              ruleKey: r.rule_key,
+                              enabled: checked,
+                              config_json: r.config_json,
+                            })
+                          }
+                        />
+                      ),
+                    },
+                    {
+                      title: '参数配置',
+                      width: 95,
+                      render: (_, r) => (
+                        <Button
+                          size="small"
+                          icon={<EditOutlined />}
+                          onClick={() => {
+                            setEditingRule(r);
+                            ruleForm.setFieldsValue({
+                              enabled: r.enabled,
+                              config_json_text: JSON.stringify(r.config_json, null, 2),
+                            });
+                          }}
+                        >
+                          参数
+                        </Button>
                       ),
                     },
                   ]}
@@ -807,6 +952,42 @@ export function ManagementPage() {
           </Form.Item>
           <Form.Item name="is_valid_for_gmv" label="计入有效 GMV / 订单数 / 销量" valuePropName="checked">
             <Switch />
+          </Form.Item>
+        </Form>
+      </Modal>
+
+      {/* Sales Rule Edit Modal */}
+      <Modal
+        title={editingRule ? `编辑规则参数：${editingRule.rule_name}` : '编辑规则参数'}
+        open={Boolean(editingRule)}
+        onCancel={() => setEditingRule(null)}
+        onOk={async () => {
+          if (!editingRule) return;
+          const values = await ruleForm.validateFields();
+          try {
+            const parsed = JSON.parse(values.config_json_text) as Record<string, unknown>;
+            updateRuleMutation.mutate({
+              ruleKey: editingRule.rule_key,
+              enabled: Boolean(values.enabled),
+              config_json: parsed,
+            });
+          } catch {
+            message.error('参数 JSON 格式不合法，请检查后重试');
+          }
+        }}
+        confirmLoading={updateRuleMutation.isPending}
+        width={560}
+      >
+        <Form form={ruleForm} layout="vertical">
+          <Form.Item name="enabled" label="启用此规则" valuePropName="checked">
+            <Switch />
+          </Form.Item>
+          <Form.Item
+            name="config_json_text"
+            label="规则配置 JSON"
+            rules={[{ required: true, message: '请输入合法 JSON' }]}
+          >
+            <Input.TextArea rows={7} className="num-mono" />
           </Form.Item>
         </Form>
       </Modal>
